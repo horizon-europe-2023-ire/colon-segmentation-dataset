@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 
-base_folder = Path(__file__).resolve().parent.parent
+base_folder = Path(__file__).resolve().parent
 
 
 def find_connected_areas(image, initial_point, neighbours=1):
@@ -284,12 +284,11 @@ def delete_file(file_path):
 def compress_file(source_path, target_path):
     compressed_path = target_path + '.gz'
 
-    # Compress the NIFTI file
     with open(source_path, 'rb') as f_in:
         with gzip.open(compressed_path, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
 
-    print(f"Compressed NIFTI file saved at: {compressed_path}")
+    # print(f"Compressed file saved at: {compressed_path}")
 
 
 def transpose(img, direction):

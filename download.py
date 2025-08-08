@@ -53,7 +53,7 @@ def read_txt_to_dict(file_path):
     return data_dict
 
 
-base_dir = Path(__file__).resolve().parent.parent
+base_dir = Path(__file__).resolve().parent
 data_dir = os.path.join(base_dir, 'data')
 os.makedirs(data_dir, exist_ok=True)
 
@@ -77,8 +77,8 @@ def compress_file_gz(source_path, target_path):
     compressed_path = target_path + '.gz'
     try:
         with open(source_path, 'rb') as f_in:
-            with gzip.open(compressed_path, 'wb') as f_out:
-                shutil.copyfileobj(f_in, f_out)
+            with gzip.open(compressed_path, 'wb', compresslevel=1) as f_out:
+                shutil.copyfileobj(f_in, f_out, length=1024 * 1024)
         print(f"File compressed and saved as {compressed_path}")
         if os.path.exists(source_path):
             os.remove(source_path)
@@ -208,6 +208,31 @@ def convert_dicom_zip_to_mha(file_path, output_directory, series_uid):
     except Exception as e:
         print(f"Error during conversion of {series_uid}: {e}")
         return f"ReadingFileError", None, None
+
+
+def convert_manually_downloaded():
+    folder = os.path.join("data/raw_manually")
+    uid_series = os.listdir(folder)
+    converted_directory = os.path.join(data_dir, "converted")
+    raw_directory = os.path.join(data_dir, "raw")
+    os.makedirs(converted_directory, exist_ok=True)
+    os.makedirs(raw_directory, exist_ok=True)
+
+    for uid_serie in uid_series:
+        series_path = os.path.join(folder, uid_serie)
+        success, subject_id, filename = convert_dicom_zip_to_mha(series_path, converted_directory, uid_serie)
+
+        # save zipped dicom file
+        if success:
+            os.makedirs(os.path.join(raw_directory, subject_id), exist_ok=True)
+            destination_path = os.path.join(raw_directory, f"{subject_id}/{filename}.zip")
+
+            # if not zipfile.is_zipfile(series_path):
+            #     shutil.make_archive(base_name=series_path, format='zip', root_dir=folder)
+            #     shutil.rmtree(series_path)
+            #     series_path = f"{series_path}.zip"
+            #
+            # shutil.move(series_path, destination_path)
 
 
 def download(files):
