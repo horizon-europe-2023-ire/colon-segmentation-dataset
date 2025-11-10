@@ -1,4 +1,4 @@
-# Colon-Dataset
+# Colon-Segmentation-Dataset
 Contains scripts and tools relevant to produce the HQColon Dataset, a dataset of 435 human colons, segmented from Computed Tomography Colonography (CTC) obtained from the publicly available The Cancer Imaging Archive (TCIA).
 
 # 1. Conda Environment
