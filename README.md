@@ -1,90 +1,247 @@
-# Colon-Segmentation-Dataset
-Contains scripts and tools relevant to produce the HQColon Dataset, a dataset of 435 human colons, segmented from Computed Tomography Colonography (CTC) obtained from the publicly available The Cancer Imaging Archive (TCIA).
+# 🧬 Colon-Segmentation-Dataset
 
-# 1. Conda Environment
-Setting up the Conda environment
+This repository contains scripts and tools used to produce the **HQColon Dataset** — a dataset of **435 human colons** segmented from **Computed Tomography Colonography (CTC)** scans obtained from the publicly available [**Cancer Imaging Archive (TCIA)**](https://www.cancerimagingarchive.net/collection/ct-colonography/).
 
-``` Console
-conda create -n IRE
-conda activate IRE      
-conda install numpy     
-conda install scipy     
+The pipeline covers the full process:  
+1. Downloading and converting CT data  
+2. Segmenting colon **air**, **fluid**
+
+---
+
+## ⚙️ 1. Conda Environment Setup
+
+To reproduce the segmentation pipelines, first set up your conda environment:
+
+```console
+conda create -n IRE python=3.10
+conda activate IRE
+
+conda install numpy
+conda install scipy
 conda install matplotlib
-conda install simpleitk  (conda install -c conda-forge simpleitk)
-conda install paraview  
-conda install request   
+conda install -c conda-forge simpleitk
+conda install paraview
+conda install requests
 ```
 
-Install ITK-Snap or 3D Slicer as visualization tools.
+For visualization, install **ITK-Snap** or **3D Slicer**:
 
-* http://www.itksnap.org/pmwiki/pmwiki.php
-* https://www.slicer.org/
+- 🧠 [ITK-Snap](http://www.itksnap.org/pmwiki/pmwiki.php)
+- 🧩 [3D Slicer](https://www.slicer.org/)
 
+---
 
-# 2. Introduction
-This section should give a quick overview how and what for to use the given code.
-
-## Data
-
-### Download Data from the Cancer Imaging Archive
-The data can be downloaded using the download.py file. Running this script a folder tcia-data is created where the raw data as the converted data is saved as in the following structure presented.
-
-Simply run the script to start downloading. This process can take several hours but can be stopped at any point, without losing any data that was already processed.
+## 🧭 2. Repository Overview
 
 ```
-tcia-data
-  ├── raw
-  │   ├── subXXX
-  │   │   └── raw DICOM content, naming subXXX.dcm
-  │   ├── subXXXX
-  │   │   └── ...
-  ├── converted
-  │   ├── subXXX
-  │   │   └── converted content in mha format, naming subXXX_conv-sitk.mha
-  │   ├── subXXXX
-  │   │   └── ...
-```
-The dataset used is the CT COLONOGRAPHY | ACRIN 6664 from teh Cancer Imaging Archieve, publicily available at https://www.cancerimagingarchive.net/collection/ct-colonography/. 
-
-In order to ensure quality of the dataset only dicom series where all dimensions are between 350 and 700 are considered. We assume normal images to have dimensions around (512,512,520)
-
-## Create Segmentations
-### Gas-filled Colon Segments
-To segment the gas-filled segmentes of the colon we use the following two steps:
-1. **Thresholding**: Using a threshold, all air-filled parts can be easily detected. This results in a segmentation including the colon, the small intestine, the lungs, and the surrounding areas.
-
-2. **Growing Region / Neighbours**: To filter out only the colon, an initial point within the colon needs to be identified, which is used as the initial point for the region growing method. This way only points directly connected to the initial point in the colon will be considered.
-
-These segmented colons are then saved as follows: 
-
-```
-tcia-data
-  ├── segmentations_colon
-  │   ├── subXXX
-  │   │   └── segmented colons in mha format, naming subXXX_conv-slicer_threshold-XXX_neighbours-XXX.mha
-  │   ├── subXXXX
-  │   │   └── ...
-```
-### Fluid-filled Colon Segments
-To segment the fluid-filled parts of the colon we used an interactive machine learning pipeline with RootPainter. This repository contains the pre-processing steps to produce the dataset for RootPainter, and the post processing steps to refine the predictions produced by RootPainter and combine the gas-filled segments with the fluid-filled segments, to produce full colon segmentations. The RootPainter project is available here: https://osf.io/8tkpm/.
-
-## Create Meshes
-In the last step, the segmented `.mha` file is transformed into meshes to a `.ply` file.
-
-```
-tcia-data
-  ├── surfacemeshes
-  │   ├── subXXX
-  │   │   └── surface meshes in ply format, naming subXXX_conv-slicer_threshold-XXX_neighbours-XXX_converted_method.ply
-  │   ├── subXXXX
-  │   │   └── ...
+.
+├── download.py                         # Downloads and converts TCIA CT Colonography data
+├── gas_segmentation/                   # Colon air segmentation pipeline
+│   ├── run_pipeline.py
+│   ├── segment_gas.py
+│   └── ...
+├── fluid_segmentation/                 # RootPainter-based colon fluid segmentation
+│   ├── generate_rootpainter_dataset.py
+│   ├── match_png_to_volumes.py
+│   ├── resample_segmentation.py
+│   └── ...
+├── totalsegmentator_pipeline/          # TotalSegmentator organ segmentation
+│   ├── create_image_paths.py
+│   ├── filter_unprocessed_images.py
+│   ├── split_paths_into_batches.py
+│   ├── totalsegmentator_oneimage.py
+│   ├── totalsegmentator_batchimages.py
+│   └── ...
+└── data/
+    ├── converted/
+    ├── segmentation-gas/
+    ├── segmentations_totalsegmentator/
+    ├── segmentations-air/
+    └── ...
 ```
 
+---
 
+## 🧩 3. Data Overview
 
+### Download Data from The Cancer Imaging Archive (TCIA)
 
+The dataset used is **CT COLONOGRAPHY | ACRIN 6664**, publicly available from TCIA.
 
+Run the following script to download and convert the dataset:
 
+```bash
+python download.py
+```
 
+This will create a `data/` folder containing the following structure:
 
+```
+data/
+  ├── raw/
+  │   ├── subXXX/
+  │   │   └── raw DICOM content (*.dcm)
+  ├── converted/
+  │   ├── subXXX/
+  │   │   └── converted image (*.mha)
+```
 
+📏 **Note:**  
+To ensure high-quality data, only DICOM series where all dimensions are between **350 and 700** are included  
+(typical CT shape ≈ `(512, 512, 520)`).
+
+---
+
+## 💨 4. Gas-Filled Colon Segmentation
+
+Located in: `gas_segmentation/`
+
+This step isolates **air-filled segments** of the colon.
+
+### Method
+
+1. **Thresholding** – Detects air regions (e.g., below -800 HU).  
+2. **Region Growing** – Starting from an automatically detected seed point (anus area), keeps only connected colon regions.
+
+### Run
+
+```bash
+python gas_segmentation/run_pipeline.py
+```
+
+### Output Structure
+
+```
+data/
+  ├── segmentation-gas/
+  │   ├── subXXX/
+  │   │   └── subXXX_conv-sitk_thr-n800_nei-1.mha
+```
+
+---
+
+## 💧 5. Fluid-Filled Colon Segmentation
+
+Located in: `fluid_segmentation/`
+
+This pipeline identifies **fluid-filled** colon regions using **RootPainter** (interactive machine learning).
+
+### Steps
+
+1. **Generate PNG dataset**
+   ```bash
+   python fluid_segmentation/generate_rootpainter_dataset.py <input_dir> <output_dir>
+   ```
+
+2. **Annotate and run inference** with [RootPainter](https://osf.io/8tkpm/).
+
+3. **Reconstruct 3D volumes from PNG masks**
+   ```bash
+   python fluid_segmentation/match_png_to_volumes.py
+   ```
+
+4. **Resample segmentations** to match original scan geometry
+   ```bash
+   python fluid_segmentation/resample_segmentation.py
+   ```
+
+5. **Extract only fluid regions**
+   ```bash
+   python fluid_segmentation/subtract_labelmaps.py
+   ```
+
+---
+
+## 🧠 6. TotalSegmentator – Multi-Organ Segmentation
+
+Located in: `totalsegmentator_pipeline/`
+
+Uses [**TotalSegmentator**](https://github.com/wasserth/TotalSegmentator) to automatically segment major organs and body structures.
+
+### Install TotalSegmentator
+
+```bash
+pip install totalsegmentator
+```
+
+### Run the Full Pipeline
+
+1. **Generate image paths**
+   ```bash
+   python totalsegmentator_pipeline/create_image_paths.py
+   ```
+
+2. **Filter unprocessed images**
+   ```bash
+   python totalsegmentator_pipeline/filter_unprocessed_images.py
+   ```
+
+3. **Split into batches**
+   ```bash
+   python totalsegmentator_pipeline/split_paths_into_batches.py
+   ```
+
+4. **Run segmentation**
+   ```bash
+   python totalsegmentator_pipeline/totalsegmentator_batchimages.py image_paths.txt
+   ```
+
+### Output Example
+
+```
+data/segmentations_totalsegmentator/
+└── sub001_pos-supine_scan-1_conv-sitk/
+    ├── sub001_pos-supine_scan-1_conv-sitk_totalseg-liver.mha.gz
+    ├── sub001_pos-supine_scan-1_conv-sitk_totalseg-heart.mha.gz
+    └── sub001_pos-supine_scan-1_conv-sitk_totalseg-lung_left.mha.gz
+```
+
+---
+
+## 🧪 8. Example Full Workflow
+
+```bash
+# 1. Download data
+python download.py
+
+# 2. Segment air regions
+python gas_segmentation/run_pipeline.py
+
+# 3. Generate RootPainter input dataset
+python fluid_segmentation/generate_rootpainter_dataset.py data/converted data/rootpainter_input
+
+# 4. Run RootPainter manually, then reconstruct results
+python fluid_segmentation/match_png_to_volumes.py
+
+# 5. Segment organs
+python totalsegmentator_pipeline/totalsegmentator_batchimages.py image_paths.txt
+```
+
+---
+
+## 🧩 Dependencies
+
+Install all required packages (Python ≥ 3.9):
+
+```bash
+pip install numpy scipy matplotlib SimpleITK totalsegmentator pillow tqdm pydicom
+```
+
+Optional (for visualization):
+
+- [ITK-Snap](http://www.itksnap.org/pmwiki/pmwiki.php)
+- [3D Slicer](https://www.slicer.org/)
+- [Paraview](https://www.paraview.org/)
+
+---
+
+## 📬 Contact
+
+For questions, feedback, or collaboration:
+
+📧 [martina.finocchiaro.mf@gmail.com](mailto:martina.finocchiaro.mf@gmail.com])  
+
+---
+
+✅ **Summary**  
+This repository provides a **complete CT Colonography segmentation framework** — from raw DICOM downloads to 3D organ and colon mask generation — using a combination of traditional image processing, interactive labeling, and state-of-the-art deep learning segmentation.

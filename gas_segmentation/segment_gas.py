@@ -1,23 +1,77 @@
+"""
+===============================================================================
+ Script: segment_gas.py
+ Purpose:
+     Automatically segment intra-luminal gas (air) in CT colonography volumes.
+     The script crawls the converted dataset, thresholds each volume to get an
+     air candidate mask, finds a robust seed in the colon, grows the connected
+     component around that seed, and saves the resulting binary segmentation.
+
+ What it does (high-level):
+   1) Input handling
+      - Accepts volumes as .mha, .mha.gz, or .zip (containing a single .mha).
+      - Normalizes orientation (using ITK direction) so all cases are processed
+        consistently; later restores geometry to match the original image.
+   2) Thresholding
+      - Applies a global intensity threshold (default: −800 HU) to obtain an
+        initial air candidate mask.
+   3) Seed selection
+      - Heuristically selects an initial seed inside the colon by scanning a
+        centered axial region from inferior to superior, skipping uniform slices.
+   4) Connected component growth
+      - Performs a BFS/region-growing from the seed with configurable
+        neighborhood connectivity (neighbours=1 or 2) to keep only the colon
+        air pocket connected to the seed while discarding surrounding/extra-colonic air.
+      - Computes basic measures (surface, volume, timing) of the grown component.
+   5) Output & bookkeeping
+      - Writes the binary segmentation (.mha) to a per-subject output folder,
+        then compresses to .mha.gz.
+      - Saves quick-look tri-planar plots (axial/coronal/sagittal) for QA.
+      - Skips already processed cases using filename matching.
+
+ Folder layout (relative to this script):
+   project_root/
+     data/
+       converted/            # input volumes: <subject>/<scan>.mha(.gz) or .zip
+       segmentation-gas/     # outputs: <subject>/<scan>_thr-..._nei-....mha(.gz)
+       air-plots/            # PNG previews of original & segmented volume
+
+ Important parameters:
+   - threshold (default −800): HU cutoff for air; more negative → larger mask.
+   - neighbours ∈ {1, 2}: 1 = 6-connected (tight), 2 = larger local neighborhood.
+   - Dimension filter: volumes with any dimension < 350 or > 700 voxels are skipped.
+
+ Notes & assumptions:
+   - Volumes are expected to be CT (HU scale) and reasonably isotropic across
+     the given dimension range; unusual geometries are skipped.
+   - The seed heuristic aims to land in colon lumen (not surrounding air);
+     if no valid seed is found, the case is skipped.
+   - QA plots flip the superior–inferior axis so rectum appears at the bottom.
+
+ Quick start:
+   - Place converted cases under ../data/converted/<subject>/<scan>.mha(.gz|.zip)
+   - Run `segment_gas()` (e.g., from run_pipeline.py) to process all new cases.
+   - Outputs go to ../data/segmentation-gas/ and previews to ../data/air-plots/.
+
+===============================================================================
+"""
+
 import tempfile
 import zipfile
-import pandas as pd
-import nibabel as nib
 import gzip
 import shutil
 import os
 import SimpleITK as sitk
-import paraview.simple as pvs
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
 import itertools
-import json
 import time
-import seaborn as sns
-import jsonlines
+from pathlib import Path
+import pandas as pd
 
-base_folder = '/home/amin/PycharmProjects/WP-BIO'
-erda_conv_folder = os.path.join('/home/amin/ucph-erda-home/IRE-DATA/CT', 'converted')
+
+base_folder = Path(__file__).resolve().parent
 
 
 def find_connected_areas(image, initial_point, neighbours=1):
@@ -82,13 +136,6 @@ def find_connected_areas(image, initial_point, neighbours=1):
     return connected_segments, surface, volume, last_point
 
 
-def find_first_index_1d(array):
-    indices = np.where(array == 1)[0]  # Find all indices where the value is 1
-    if indices.size > 0:
-        return indices[0]  # Return the first index
-    return None  # If 1 is not found
-
-
 def find_first_index_2d(array):
     indices = np.argwhere(array == 1)  # Find all indices where the value is 1
     if indices.size > 0:
@@ -124,23 +171,6 @@ def find_initial_point(data):
     return None
 
 
-def add_patient_data(filename, volume=None, surface=None, time=None, threshold=None, neighbours=None, collapsed=None):
-    # Patient data to be added
-    patient_data = {
-        "filename": filename,
-        "volume": volume,
-        "surface": surface,
-        "time": time,
-        "collapsed": collapsed,
-    }
-
-    file_path = f'tcia-data/meta-data/segmentation_details_{threshold}_{neighbours}.jsonl'
-    file_path = os.path.join(base_folder, file_path)
-    # Open file in append mode and write the JSON object as a line
-    with open(file_path, 'a') as file:
-        file.write(json.dumps(patient_data) + '\n')
-
-
 def create_segmentation(input_filepath, output_directory, filepath, threshold=-800, neighbours=1, coloured=False,
                         only_thresholding=False):
     """
@@ -159,7 +189,9 @@ def create_segmentation(input_filepath, output_directory, filepath, threshold=-8
     filename = filepath.replace(".mha.gz", '')
     base_name = filepath.replace("_conv-sitk.mha.gz", '')  # sub044_pos-prone_scan-1
 
-    if input_filepath.endswith('.zip'):
+    input_filepath = Path(input_filepath)
+
+    if input_filepath.suffix == '.zip':
         # Extract the .mha file from the ZIP archive
         with zipfile.ZipFile(input_filepath, 'r') as zip_file:
             # Find the .mha file within the zip archive
@@ -177,7 +209,7 @@ def create_segmentation(input_filepath, output_directory, filepath, threshold=-8
         except Exception as e:
             image = sitk.ReadImage(temp_mha_file)  # for windows?
             os.remove(temp_mha_filepath)
-    elif input_filepath.endswith('.gz'):
+    elif input_filepath.suffix == '.gz':
         # Handle the .gz file extraction
         with gzip.open(input_filepath, 'rb') as gz_file:
             # Create a temporary file to write the extracted content
@@ -189,7 +221,7 @@ def create_segmentation(input_filepath, output_directory, filepath, threshold=-8
         except Exception as e:
             image = sitk.ReadImage(temp_mha_file)  # for windows?
             os.remove(temp_mha_filepath)
-    elif input_filepath.endswith('.mha'):
+    elif input_filepath.suffix == '.mha':
         try:
             image = sitk.ReadImage(input_filepath)  # for linux?
         except Exception as e:
@@ -208,23 +240,17 @@ def create_segmentation(input_filepath, output_directory, filepath, threshold=-8
     else:
         thr_str = str(threshold)
     new_file_name = f"{filename}_thr-{thr_str}_nei-{neighbours}"
-    output_path = os.path.join(base_folder, "tcia-data", "plots", f"{new_file_name}_plt-org")
+    output_path = os.path.join(base_folder, "data", "air-plots", f"{new_file_name}_plt-org")
     visualize_image(sitk.GetArrayFromImage(image), output_path, title=f'{input_filepath} Original Image')
 
     # rotate image and visualize result
     image_rotated, meta_data, changed = orient_image(image, False, image.GetDirection())
-
-    # img_data = sitk.GetArrayFromImage(image_rotated)
-    # visualize_image(img_data, output_path, title=f'{input_filepath} Oriented Image')
 
     # Apply a global threshold to identify the luminal surface
     binary_image = image_rotated < threshold
     bi_img_data = sitk.GetArrayFromImage(binary_image)
 
     initial_point = find_initial_point(bi_img_data)
-
-    # output_path2 = os.path.join(base_folder, "tcia-data", "plots", f"{new_file_name}_plt-bin")
-    # visualize_image(bi_img_data, output_path2, title=f'{input_filepath} Binary Image - Thr: {threshold}', initial_point=initial_point)
 
     if initial_point is None:
         print(f"Initial Point not found for file: {input_filepath}")
@@ -245,14 +271,10 @@ def create_segmentation(input_filepath, output_directory, filepath, threshold=-8
         print(f"Colon is probably collapsed for: {new_file_name}")
         collapsed = True
 
-    output_path3 = os.path.join(base_folder, "tcia-data", "plots", f"{new_file_name}_plt-seg")
-
-    add_patient_data(new_file_name, volume, surface, elapsed_time, threshold, neighbours, collapsed)
+    output_path3 = os.path.join(base_folder, "data", "air-plots", f"{new_file_name}_plt-seg")
 
     connected_segments = (connected_segments != 0).astype(np.uint8)
-
-    # name the new file in a way it can be reconstructed how it was created
-    filename = f"{new_file_name}.mha"
+    filename = f"{new_file_name}.mha"  # name the new file in a way it can be reconstructed how it was created
 
     # Save connected_segments as .mha file
     connected_segments_img = sitk.GetImageFromArray(connected_segments)
@@ -322,187 +344,11 @@ def delete_file(file_path):
 def compress_file(source_path, target_path):
     compressed_path = target_path + '.gz'
 
-    # Compress the NIFTI file
     with open(source_path, 'rb') as f_in:
         with gzip.open(compressed_path, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
 
-    print(f"Compressed NIFTI file saved at: {compressed_path}")
-
-
-def decompress_file(path, filename):
-    #decompressed_nifti_path = f"{path}/{filename}"
-    decompressed_nifti_path = os.path.join(path, filename)
-    compressed_nifti_path = decompressed_nifti_path + '.gz'
-
-    # Decompress the NIFTI file
-    with gzip.open(compressed_nifti_path, 'rb') as f_in:
-        with open(decompressed_nifti_path, 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-
-    print(f"Decompressed NIFTI file saved at: {decompressed_nifti_path}")
-
-
-def visualize_slice(data, title=""):
-    plt.imshow(data, cmap='gray')
-    plt.title(title)
-    plt.show()
-
-
-def nifty_to_mha(filename, path):
-    reader = sitk.ImageFileReader()
-    reader.SetImageIO("NiftiImageIO")
-    reader.SetFileName(f"{path}{filename}.nii")
-    image = reader.Execute()
-
-    writer = sitk.ImageFileWriter()
-    writer.SetFileName(f"{path}{filename}.mha")
-    writer.Execute(image)
-
-
-def visualize_histogram(data, title):
-    plt.hist(data.ravel(), bins=2)
-    plt.title(title)
-    plt.xlabel('Scalar Value')
-    plt.ylabel('Frequency')
-    plt.show()
-
-
-def create_mesh(source_path, target_path):
-    # Load the segmentation image
-    image = pvs.OpenDataFile(source_path)
-    data_info = pvs.GetActiveSource()
-    print(data_info)
-
-    # Print available point and cell data arrays
-    print("Point Data Arrays:")
-    for array_name in data_info.PointData.keys():
-        print(f"- {array_name}")
-
-    print("Cell Data Arrays:")
-    for array_name in data_info.CellData.keys():
-        print(f"- {array_name}")
-
-    # Apply the Contour filter to generate a 3D surface
-    contour = pvs.Contour(Input=image)
-    contour.ContourBy = ['MetaImage']  # Scalars_
-    contour.Isosurfaces = [0.5]  # Set the contour value, adjust if needed
-    contour.UpdatePipeline()
-
-    # Check if the contour filter has output
-    contour_output = contour.GetClientSideObject().GetOutput()
-    if not contour_output.GetNumberOfPoints():
-        raise RuntimeError("No valid geometry generated by the contour filter!")
-
-    # Apply the Smooth filter
-    smooth = pvs.Smooth(Input=contour)
-    smooth.NumberofIterations = 50  # Adjust the number of iterations as needed
-    smooth.Convergence = 0.0  # Adjust the convergence threshold as needed
-    smooth.RelaxationFactor = 0.5
-    smooth.UpdatePipeline()
-
-    # Check if the smooth filter has output
-    smooth_output = smooth.GetClientSideObject().GetOutput()
-    if not smooth_output.GetNumberOfPoints():
-        raise RuntimeError("No valid geometry generated by the smooth filter!")
-
-    # # Apply the Decimate filter
-    # decimate = pvs.Decimate(Input=smooth)
-    # decimate.TargetReduction = 0.1  # Target reduction (0.5 = 50% reduction). Adjust as needed
-    # decimate.UpdatePipeline()
-
-    # # Check if the decimate filter has output
-    # decimate_output = decimate.GetClientSideObject().GetOutput()
-    # if not decimate_output.GetNumberOfPoints():
-    #     raise RuntimeError("No valid geometry generated by the decimate filter!")
-
-    # # Visualize the decimated data
-    # decimate_display = pvs.Show(decimate)
-    # pvs.Render()
-    # time.sleep(1)
-
-    # # Export the final mesh to a .ply file
-    # pvs.SaveData(target_path, proxy=decimate, FileType='Binary')
-    # print(f"Mesh exported to {target_path}")
-
-    # # Clean up by deleting the data from the pipeline and hiding the display
-    # pvs.Delete(decimate)
-
-    # Export the final mesh to a .ply file
-    pvs.SaveData(target_path, proxy=smooth, FileType='Binary')
-    print(f"Mesh exported to {target_path}")
-    pvs.Delete(smooth)
-
-
-def show_ply_file(file):
-    # Load the .ply file
-    ply_data = pvs.OpenDataFile(file)
-    print(f"Loaded {file}")
-
-    # Display the loaded data
-    display = pvs.Show(ply_data)
-
-    # Set representation to 'Surface' for better visualization (optional)
-    display.Representation = 'Surface'
-
-    # Get the active view
-    view = pvs.GetActiveViewOrCreate('RenderView')
-    view.InteractionMode = '3D'
-
-    # Get data bounds
-    bounds = ply_data.GetDataInformation().GetBounds()
-    center = [(bounds[1] + bounds[0]) / 2, (bounds[3] + bounds[2]) / 2, (bounds[5] + bounds[4]) / 2]
-    max_dim = max(bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4])
-
-    # Zoom out factor
-    zoom_out_factor = 2
-
-    # List of camera positions and focal points
-    camera_positions = [
-        [center[0], center[1], bounds[5] + zoom_out_factor * max_dim],  # Top view
-        [center[0] + zoom_out_factor * max_dim, center[1], center[2]],  # Front view (normal)
-        [center[0] - zoom_out_factor * max_dim, center[1], center[2]]  # Back view
-    ]
-    focal_points = [
-        center,  # Common focal point
-        center,  # Common focal point
-        center  # Common focal point
-    ]
-    view_up_vectors = [
-        [0.0, 1.0, 0.0],  # Top view up direction
-        [0.0, 0.0, 1.0],  # Front view up direction
-        [0.0, 0.0, 1.0]  # Back view up direction
-    ]
-    # Iterate through camera positions
-    for i in range(len(camera_positions)):
-        view.CameraPosition = camera_positions[i]
-        view.CameraFocalPoint = focal_points[i]
-        view.CameraViewUp = view_up_vectors[i]
-        pvs.Render()
-        time.sleep(1)  # Adjust as needed
-
-    print("Finished showing object from different angles.")
-
-    # Clean up by deleting the data from the pipeline and hiding the display
-    pvs.Delete(ply_data)
-
-
-def investigate_nifty(filename, path):
-    img = nib.load(f"{path}{filename}.nii")
-    print(img.header)
-
-    data = img.get_fdata()
-
-    # Get the scalar range
-    scalar_range = (np.min(data), np.max(data))
-    print("NIfTI scalar range:", scalar_range)
-
-    # Visualize histogram
-    visualize_histogram(data, "NIfTI Scalar Values")
-
-    # Visualize a slice from NIfTI data (optional)
-    slice_index = data.shape[2] // 2  # Choose the middle slice index along the z-axis
-    visualize_slice(data[:, :, slice_index], title=f"Slice {slice_index} from NIfTI data")
+    # print(f"Compressed file saved at: {compressed_path}")
 
 
 def transpose(img, direction):
@@ -566,7 +412,10 @@ def orient_image(image, revert, direction):
         # check if we have to flip or transpose image
         tmp = np.array(direction) == np.abs(direction)
         if not tmp.all():
-            change = True
+            change = True        # source_path = f"{converted_folder}/{subject}/{file}"
+        # source_path = os.path.join(base_folder, 'data', 'converted', subject, file)
+        # target_directory = os.path.join(segmentations_colon_folder, subject)
+        # os.makedirs(target_directory, exist_ok=True)
             image_array = flip_img(image_array, direction)
 
         # update metadata
@@ -590,44 +439,71 @@ def orient_image(image, revert, direction):
     return image, meta_data, False
 
 
-if __name__ == "__main__":
-    #######################################################################################################
-    plots_folder = os.path.join(base_folder, "tcia-data", "plots")
-    os.makedirs(plots_folder, exist_ok=True)
+def list_gz_files(folder_path):
+    gz_files = []
+    for root, _, files in os.walk(folder_path):
+        for file in files:
+            if file.endswith('.gz'):
+                base_name = os.path.basename(file)
+                base_name = '_'.join(base_name.split('_')[:4])
+                gz_files.append(base_name)
+    return gz_files
+
+
+def segment_gas():
+
+    base_folder = Path(__file__).resolve().parent
+    parent_folder = base_folder.parent  # one level above
+
+    converted_folder = parent_folder / "data" / "converted"
+    segmentations_colon_folder = parent_folder / "data" / "segmentation-gas"
+
+    converted_folder.mkdir(parents=True, exist_ok=True)
+    segmentations_colon_folder.mkdir(parents=True, exist_ok=True)
+
+    # Check if the 'converted' folder exists
+    if not os.path.isdir(converted_folder):
+        raise ValueError(f"The directory {converted_folder} does not exist. No data to segment.")
+
+    # List all files in the 'converted' folder
+    # filenames: sub002_pos-prone_scan-1_conv-sitk_thr-n800_nei-1.mha.gz
+    existing_seg_files = list_gz_files(segmentations_colon_folder)
+    filenames = list_gz_files(converted_folder)
 
     threshold = -800
     neighbours = 1
-    files = ['sub286_pos-prone_scan-1_conv-sitk.mha.gz',
-             'sub747_pos-prone_scan-1_conv-sitk.mha.gz',]
 
-    for filename in files:
-        subject = filename.split('_')[0]
-        source_path = os.path.join(erda_conv_folder, subject, filename)
-        #source_path = os.path.join(base_folder, "tcia-data", "converted", subject, filename)
-        target_directory = os.path.join(base_folder, "tcia-data", "segmentations_colon")
+    for file in filenames:
+        filename = file.split('conv')[0][:-1]
+        if filename in existing_seg_files:
+            # indicated that that file was already processed, skip to next file
+            print(f"Skipping {filename}")
+            continue
 
-        filepath_segmentation = create_segmentation(source_path, target_directory, filename, threshold=threshold,
-                            neighbours=neighbours, coloured=False, only_thresholding=False)
+        subject = file.split('_')[0]
 
-        if filepath_segmentation:
-            if os.path.isfile(filepath_segmentation):
-                compress_file(filepath_segmentation, filepath_segmentation)
-            else:
-                print("No Segmentation File")
+        base_folder = Path(__file__).resolve().parent
+        parent_folder = base_folder.parent  # one folder above
 
-        ########################################################################################################
-        # Example how to create meshes from an existing segmentation
-        # segmented_filename = filepath_segmentation.split("/")[-1]
-        # segmented_filename, ext1 = os.path.splitext(segmented_filename)
-        #
-        # # creates .ply file
-        # mesh_filename = f"{segmented_filename}_pvs"
-        # meshed_file = f"tcia-data/surfacemeshes/{mesh_filename}.ply"
-        # create_mesh(filepath_segmentation, meshed_file)
-        # compress_file(meshed_file, meshed_file)
-        #
-        # ###########################################################################################################
-        # show_ply_file(f"tcia-data/surfacemeshes/{uuid}_sitk_{threshold}_{neighbours}_pvs.ply")
+        source_path = parent_folder / "data" / "converted" / subject / file
+        segmentations_colon_folder = parent_folder / "data" / "segmentation-gas"
+        target_directory = segmentations_colon_folder / subject
+        target_directory.mkdir(parents=True, exist_ok=True)
 
-    print("DONE")
+        existing_segmentations = os.listdir(target_directory)
 
+        is_present = any(file in s for s in existing_segmentations)
+        if is_present:
+            print(f"Already segmented: {file}")
+            continue
+
+        print(f"Start to segment: {file}")
+        segmented_filepath = create_segmentation(source_path, target_directory, file, threshold=threshold,
+                                                 neighbours=neighbours,
+                                                 coloured=True, only_thresholding=False)
+
+        if segmented_filepath is None:
+            continue
+
+        compress_file(segmented_filepath, segmented_filepath)
+        delete_file(segmented_filepath)

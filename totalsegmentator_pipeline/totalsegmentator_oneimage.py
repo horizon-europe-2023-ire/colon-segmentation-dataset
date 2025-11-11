@@ -1,3 +1,48 @@
+"""
+===============================================================================
+ Script: totalsegmentator_oneimage.py
+ Purpose:
+     Run TotalSegmentator on a single .mha.gz image volume by converting it
+     into NIfTI format, performing segmentation, and converting the results
+     back into .mha.gz files.
+
+ Description:
+     - This script is designed as the worker used by batch pipelines such as
+       `totalsegmentator_batchimages.py`.
+     - It handles all necessary format conversions and cleanup automatically:
+         1. Decompresses the input .mha.gz image to .mha.
+         2. Converts .mha to temporary .nii.gz (NIfTI) for TotalSegmentator.
+         3. Runs the TotalSegmentator Python API to segment anatomical structures.
+         4. Converts each resulting .nii.gz segmentation back to .mha.gz.
+         5. Renames output files following a standardized convention:
+              <scan_name>_totalseg-<organ>.mha.gz
+     - Temporary files and directories are cleaned up at the end of processing.
+
+ Usage:
+     python totalsegmentator_oneimage.py <input_mha_file_path> <output_base_path>
+
+ Example:
+     python totalsegmentator_oneimage.py \
+         ../data/converted/sub001/scan1.mha.gz \
+         ../data/segmentations_totalsegmentator/sub001/scan1/
+
+ Output structure:
+     ../data/segmentations_totalsegmentator/sub001/scan1/
+         scan1_totalseg-liver.mha.gz
+         scan1_totalseg-lung_left.mha.gz
+         scan1_totalseg-colon.mha.gz
+         ...
+
+ Notes:
+     - Requires the `totalsegmentator` Python package and SimpleITK.
+     - Intermediate temporary files are created in the working directory.
+     - Output directory is created automatically if it doesn’t exist.
+     - Designed for integration into multiprocessing workflows.
+
+===============================================================================
+"""
+
+
 import os
 import SimpleITK as sitk
 import gzip
@@ -86,6 +131,7 @@ def run_totalsegmentator(input_mha_file_path, output_base_path):
     try:
         # Step 4: Run TotalSegmentator on the temporary NIfTI file
         totalsegmentator(temp_input_nii, temp_output_dir)
+        print('Running Total segmentator')
 
         # Step 5: Handle TotalSegmentator output (directory): Rename and convert .nii.gz to mha.gz
         #rename_totalseg_output(temp_output_dir, output_base_path)
@@ -112,3 +158,5 @@ if __name__ == "__main__":
     output_mha_file_path = sys.argv[2]
 
     run_totalsegmentator(input_mha_file_path, output_mha_file_path)
+
+   

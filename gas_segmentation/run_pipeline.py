@@ -1,86 +1,67 @@
-from helper import *
-import pandas as pd
+"""
+===============================================================================
+ Script: run_pipeline.py
+ Purpose:
+     End-to-end pipeline to:
+       1) Download CT Colonography data from TCIA,
+       2) Convert downloaded DICOM series to .mha format, and
+       3) Segment intra-luminal gas (air) in the colon.
+
+ Description:
+     - The script coordinates the data retrieval, conversion, and segmentation
+       process using helper modules:
+           • download.py — handles data fetching and DICOM-to-MHA conversion.
+           • segment_gas.py — performs air segmentation using intensity
+             thresholding and connected-component growth from a heuristic
+             seed point near the anus.
+     - By default, only a subset of SeriesInstanceUIDs is processed to keep
+       runtime manageable, but you can easily switch to downloading the full
+       dataset if desired.
+
+ Workflow:
+     1. Specify one or more TCIA SeriesInstanceUIDs in the `files` list.
+     2. The script calls `download(files)` to fetch and convert the data into:
+            ../data/converted/<subject>/<scan>.mha(.gz)
+     3. Once data are prepared, `segment_gas()` is called to segment the
+        intra-luminal air and save results under:
+            ../data/segmentation-gas/
+        along with PNG quality-control visualizations under:
+            ../data/air-plots/
+
+ Usage:
+     python run_pipeline.py
+
+ Customization:
+     - To process the entire dataset (⚠ may take >24h and large disk space),
+       set `files = None` inside the script before running.
+     - If you have already manually downloaded data, you can skip the
+       `download()` step and use:
+           convert_manually_downloaded()
+     - Ensure TCIA network access is available and the output folders exist
+       or can be created under the project directory.
+
+===============================================================================
+"""
+
+import sys
 import os
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-erda_folder = '/home/amin/ucph-erda-home/IRE-DATA/CT'
-base_folder = '/home/amin/PycharmProjects/WP-BIO'
-
-
-def list_gz_files(folder_path):
-    gz_files = []
-    for root, _, files in os.walk(folder_path):
-        for file in files:
-            if file.endswith('.gz'):
-                base_name = os.path.basename(file)
-                base_name = '_'.join(base_name.split('_')[:4])
-                gz_files.append(base_name)
-    return gz_files
-
+from segment_gas import segment_gas
+from download import download, convert_manually_downloaded
 
 if __name__ == "__main__":
-    converted_folder = os.path.join(erda_folder, "converted")
-    segmentations_colon_folder = os.path.join(base_folder, "tcia-data", "segmentations", "segmentations-regionalgrowing")
-    plots_folder = os.path.join(base_folder, "tcia-data", "plots")
-    os.makedirs(segmentations_colon_folder, exist_ok=True)
-    os.makedirs(plots_folder, exist_ok=True)
 
-    # Check if the 'converted' folder exists
-    if not os.path.isdir(converted_folder):
-        print(f"The directory {converted_folder} does not exist. No data to segment.")
-        exit()
+    files = ["1.3.6.1.4.1.9328.50.4.850207",
+             "1.3.6.1.4.1.9328.50.4.849142",
+             "1.3.6.1.4.1.9328.50.4.692452",
+             "1.3.6.1.4.1.9328.50.4.691902"
+             ]
+    
+    download(files)
 
-    # List all files in the 'converted' folder
-    # file names: sub002_pos-prone_scan-1_conv-sitk_thr-n800_nei-1.mha.gz
-    existing_seg_files = list_gz_files(segmentations_colon_folder)
+    # convert_manually_downloaded()
 
-    threshold = -800
-    neighbours = 1
-    # meta_data_df = pd.read_json(os.path.join(erda_folder, "metadata", "meta_data_df.json"), lines=True)
-    meta_data_df = pd.read_json(os.path.join(base_folder, "tcia-data", "meta-data", "meta_data_df.json"), lines=True)
+    segment_gas()
 
-    ids = [
-        "1.3.6.1.4.1.9328.50.4.434283"
-    ]
-
-    if ids:
-        df = meta_data_df[meta_data_df['InstanceUID'].isin(ids)]
-        filenames = df.name.tolist()
-        # sub091_pos-supine_scan-1_conv-sitk.mha.gz"
-        filenames = [f"{name}_conv-sitk" for name in filenames]
-
-    else:
-        # segment all
-        filenames = list_gz_files(converted_folder)
-
-    for file in filenames:
-
-        filename = file.split('conv')[0][:-1]
-        if filename in existing_seg_files:
-            # indicated that that file was already processed, skip to next file
-            print(f"Skipping {filename}")
-            continue
-
-        subject = file.split('_')[0]
-
-        # source_path = f"{converted_folder}/{subject}/{file}"
-        source_path = os.path.join(erda_folder, 'converted', subject, f"{file}.mha.gz")
-        target_directory = os.path.join(segmentations_colon_folder, subject)
-        os.makedirs(target_directory, exist_ok=True)
-
-        existing_segmentations = os.listdir(target_directory)
-        is_present = any(file in s for s in existing_segmentations)
-        if is_present:
-            print(f"Already segmented: {file}")
-            continue
-
-        print(f"Start to segment: {file}")
-        segmented_filepath = create_segmentation(source_path, target_directory, file, threshold=threshold,
-                                                 neighbours=neighbours,
-                                                 coloured=True, only_thresholding=False)
-
-        if segmented_filepath is None:
-            continue
-
-        compress_file(segmented_filepath, segmented_filepath)
-        delete_file(segmented_filepath)
