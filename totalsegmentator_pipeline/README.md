@@ -153,7 +153,7 @@ pip install totalsegmentator SimpleITK numpy
 For questions, feedback, or collaboration:
 
 **Martina and Viktor**  
-📧 [martina.finocchiaro@di.ku.dk](mailto:martina.finocchiaro@di.ku.dk)  
+📧 [martina.finocchiaro.mf@gmail.com](mailto:martina.finocchiaro.mf@gmail.com])  
 📧 [vikkimar03@gmail.com](mailto:vikkimar03@gmail.com)
 
 ---
