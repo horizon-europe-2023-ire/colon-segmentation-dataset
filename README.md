@@ -1,6 +1,6 @@
 # 🧬 Colon-Segmentation-Dataset
 
-This repository contains scripts and tools used to produce the **HQColon Dataset** — a dataset of **435 human colons** segmented from **Computed Tomography Colonography (CTC)** scans obtained from the publicly available [**Cancer Imaging Archive (TCIA)**](https://www.cancerimagingarchive.net/collection/ct-colonography/).
+This repository contains scripts and tools used to produce the [**HQColon Dataset**](https://doi.org/https://doi.org/10.17605/OSF.IO/8TKPM): a dataset of **435 human colons** segmented from **Computed Tomography Colonography (CTC)** scans obtained from the publicly available [**Cancer Imaging Archive (TCIA)**](https://www.cancerimagingarchive.net/collection/ct-colonography/).
 
 The pipeline covers the full process:  
 1. Downloading and converting CT data  
